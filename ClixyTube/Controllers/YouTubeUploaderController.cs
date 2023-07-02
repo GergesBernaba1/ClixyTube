@@ -14,6 +14,8 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Threading;
 using Google.Apis.Auth.AspNetCore3;
+using System.Reflection;
+using Microsoft.AspNetCore.Authorization;
 
 namespace ClixyTube.Controllers
 {
@@ -22,15 +24,91 @@ namespace ClixyTube.Controllers
     public class YouTubeUploaderController : ControllerBase
     {
         private readonly ILogger<YouTubeUploaderController> _logger;
+        private readonly YouTubeService _youtubeService;
 
         public YouTubeUploaderController(ILogger<YouTubeUploaderController> logger)
         {
             _logger = logger;
+
+
+
+            var credential = GoogleWebAuthorizationBroker.AuthorizeAsync(
+                new ClientSecrets
+                {
+                    ClientId = "283865851701-ik9h69h441cpmalq5km6pbt1f1jbav0s.apps.googleusercontent.com",
+                    ClientSecret = "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",
+                },
+                new[] { YouTubeService.Scope.YoutubeUpload },
+                "user",
+                CancellationToken.None,
+                new FileDataStore("YouTube.Auth.Store")).Result;
+
+            _youtubeService = new YouTubeService(new BaseClientService.Initializer()
+            {
+                HttpClientInitializer = credential,
+                ApplicationName = Assembly.GetExecutingAssembly().GetName().Name
+            });
         }
+
+
+
+        [HttpPost]
+        //[Authorize]
+        public async Task<IActionResult> UploadVideo(IFormFile file)
+        {
+            try
+            {
+                var video = new Video();
+                video.Snippet = new VideoSnippet();
+                video.Snippet.Title = "Default Video Title";
+                video.Snippet.Description = "Default Video Description";
+                video.Snippet.Tags = new string[] { "tag1", "tag2" };
+                video.Snippet.CategoryId = "22"; // See https://developers.google.com/youtube/v3/docs/videoCategories/list
+                video.Status = new VideoStatus();
+                video.Status.PrivacyStatus = "unlisted"; // or "private" or "public"
+
+                using (var stream = new MemoryStream())
+                {
+                    await file.CopyToAsync(stream);
+                    var videosInsertRequest = _youtubeService.Videos.Insert(video, "snippet,status", stream, "video/*");
+                    videosInsertRequest.ProgressChanged += videosInsertRequest_ProgressChanged;
+                    videosInsertRequest.ResponseReceived += videosInsertRequest_ResponseReceived;
+
+                    await videosInsertRequest.UploadAsync();
+                }
+
+                return Ok();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error uploading video to YouTube.");
+                return StatusCode(StatusCodes.Status500InternalServerError);
+            }
+        }
+
+        private void videosInsertRequest_ProgressChanged(IUploadProgress progress)
+        {
+            switch (progress.Status)
+            {
+                case UploadStatus.Uploading:
+                    _logger.LogInformation("{0} bytes sent.", progress.BytesSent);
+                    break;
+
+                case UploadStatus.Failed:
+                    _logger.LogError("An error prevented the upload from completing.\n{0}", progress.Exception);
+                    break;
+            }
+        }
+
+        private void videosInsertRequest_ResponseReceived(Video video)
+        {
+            _logger.LogInformation("Video id '{0}' was successfully uploaded.", video.Id);
+        }
+
 
         [HttpPost]
         [Obsolete]
-        public async Task<IActionResult> UploadVideo(IFormFile videoFile)
+        public async Task<IActionResult> UploadVideoOld(IFormFile videoFile)
         {
             string title = "Test";
             string description = "Test desc";
